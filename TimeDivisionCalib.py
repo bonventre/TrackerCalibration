@@ -4,6 +4,7 @@ import uproot
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
+import scipy.stats
 
 import dbUtility
 
@@ -11,7 +12,7 @@ halflengths = np.array([587.878, 585.846, 583.79, 581.711, 579.607, 577.478, 575
 lengths = halflengths*2
 
 def readData(filenames):
-    hitfields = ["plane","panel","straw","uupos","etime","ulresidpvar","state","edep","wdist","udt","udoca"]
+    hitfields = ["plane","panel","straw","uupos","etime","ulresid","ulresidpvar","ulresidmvar","state","edep","wdist","udt","udoca"]
     trkfields = ["npanels"]
     run = 0
     a = {field: [] for field in hitfields+trkfields}
@@ -80,13 +81,16 @@ if __name__ == "__main__":
     goodstraw = (counts >= args.mincount)
     mean_wdist = np.mean(ak.unflatten(a["wdist"],counts),axis=1)
     sids = a["sid"][np.concatenate(([0], np.cumsum(counts[:-1])))]
+    wdist_straws = 0
     for i in range(len(goodstraw)):
-        if goodstraw[i] and np.abs(mean_wdist[i]) > 100:
-            t0offsets[sids[i]] = mean_wdist[i]/100.
-#            print("setting default for",i,a_unflat["sid"][i][0],t0offsets[a_unflat["sid"][i][0]],np.mean(a_unflat["deltat"][i]))
+        if goodstraw[i] and np.abs(mean_wdist[i]) > 800:
+            t0offsets[sids[i]] = mean_wdist[i]/800.
+            wdist_straws += 1
+            print("setting default for",i,sids[i],t0offsets[sids[i]],np.mean(a["deltat"][a["sid"] == sids[i]]))
+    print("%d straws had large wdist" % (wdist_straws))
 
     a["deltat"] -= t0offsets[a["sid"]]
-    cut = (np.abs(a["deltat"]) < args.dtcut) & (a["state"] > -2) & (np.sqrt(a["ulresidpvar"]) < 50) & (np.abs(a["uupos"]) < a["strawlen"]*args.strawfrac)
+    cut = (np.abs(a["deltat"]) < args.dtcut) & (a["state"] > -2) & (np.sqrt(a["ulresidpvar"]) < 50) & (np.abs(a["uupos"]) < a["strawlen"]*args.strawfrac) & (np.abs(a["ulresid"]) < 1000)
 
     for field in a:
         a[field] = a[field][cut]
@@ -95,6 +99,8 @@ if __name__ == "__main__":
     chan_starts = np.cumsum(np.concatenate(([0], counts[:-1])))
     chan_ends = np.cumsum(counts)
     sids = a["sid"][np.concatenate(([0], np.cumsum(counts[:-1])))]
+
+    print("Using %d hits" % (np.sum(counts)))
 
     t0errs = []
     
@@ -107,7 +113,9 @@ if __name__ == "__main__":
         propvels[sid] = 1/slope
         t0offsets[sid] = intercept
 
-    print("MEAN T0ERR:",np.mean(t0errs))
+    #print("MEAN T0ERR: %.2f %.2f %.2f %.2f(ns)" % (np.mean(t0errs),np.std(t0errs),np.max(t0errs),np.min(t0errs)))
+    print("MEAN T0ERR: %.2f (ns)" % (np.mean(t0errs)))
+    print("Updated %d channel t0 offsets, avg mag = %.2f (ns)" % (np.sum(counts >= args.mincount),np.mean(np.abs(t0offsets[t0offsets != 0]))))
 
     energies = np.zeros(12)
     escales = np.zeros(12)
@@ -126,6 +134,8 @@ if __name__ == "__main__":
     pval = propvels[a["sid"]] * np.interp(a["edep"], energies, escales)
     pred2 = (a["deltat"] - t0offsets[a["sid"]])*pval
 
+    residuals = []
+    residualerrs = []
 
     emids = []
     eslopes = []
@@ -155,7 +165,34 @@ if __name__ == "__main__":
         eslopes.append(slope)
         if args.plot:
             plt.plot(uposes,errors,label="%d" % j)
+    if args.plot:
+        plt.show()
+        input()
 
+    goodcalib = (propvels[a["sid"]] != 0)
+    startresids = (a["uupos"]-a["wdist"])[goodcalib]
+    startresiderrs = np.sqrt(a["ulresidmvar"]+a["ulresidpvar"])[goodcalib]
+    resids = (a["uupos"] - pred2)[goodcalib]
+    residerrs = (np.interp(a["edep"],energies,emids) + np.interp(a["edep"],energies,eslopes)*np.abs(pred2))[goodcalib]
+
+    startcore = np.abs(startresids) < 250
+    upcore = np.abs(resids) < 250
+
+    print("Starting calibration: (all, core < 250 mm)")
+    mu, sigma = scipy.stats.norm.fit(startresids[startcore])
+    print("Mean residual: %6.1f %6.1f" % (np.mean(startresids),mu))
+    print("residual RMS : %6.1f %6.1f" % (np.std(startresids),sigma))
+    pull = startresids/startresiderrs
+    mu, sigma = scipy.stats.norm.fit(pull[np.abs(pull) < 2])
+    print("pull RMS     : %6.2f %6.2f" % (np.std(pull),sigma))
+    print("Updated calibration:")
+    mu, sigma = scipy.stats.norm.fit(resids[upcore])
+    print("Mean residual: %6.1f %6.1f" % (np.mean(resids),mu))
+    print("residual RMS : %6.1f %6.1f"  % (np.std(resids),sigma))
+    pull = resids/residerrs
+    mu, sigma = scipy.stats.norm.fit(pull[np.abs(pull) < 2])
+    print("pull RMS     : %6.2f %6.2f"  % (np.std(pull),sigma))
+    import pdb;pdb.set_trace()
 
     fout = open(args.output + ".fcl","w")
     fout.write("services.ProditionsService.strawResponse.eBins : %d\n" % args.ebins)
@@ -212,6 +249,19 @@ if __name__ == "__main__":
     print("Wrote calibrations")
 
     if args.plot:
-        plt.legend()
-        plt.show()
+        import ROOT
+#        hr0 = ROOT.TH1F("hr0","hr0",600,-600,600)
+#        hr1 = ROOT.TH1F("hr1","hr1",600,-600,600)
+#        hr0.FillN(len(a["ulresid"][goodcalib]),a["ulresid"][goodcalib].astype(np.double),np.ones(len(a["ulresid"][goodcalib]),dtype=np.double))
+#        hr1.FillN(len(resids),resids.astype(np.double),np.ones(len(resids),dtype=np.double))
+        hr0 = ROOT.TH1F("hr0","hr0",600,-6,6)
+        hr1 = ROOT.TH1F("hr1","hr1",600,-6,6)
+        hr0.FillN(len(startresids),(startresids/startresiderrs).astype(np.double),np.ones(len(startresids),dtype=np.double))
+        hr1.FillN(len(resids),(resids/residerrs).astype(np.double),np.ones(len(resids),dtype=np.double))
+        hr0.Draw()
+        hr1.SetLineColor(ROOT.kRed)
+        hr1.Draw("same")
+
+        #plt.legend()
+        #plt.show()
         input()
