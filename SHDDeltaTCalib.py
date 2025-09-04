@@ -34,24 +34,32 @@ if __name__ == "__main__":
         print("Error: need to provide source or source list")
         sys.exit(1)
 
-    aa = []
+    a = {field: [] for field in ["tcal","thv","sid"]}
+    counts = 0
+    runid = 0
     for batch in uproot.iterate([fn + ":StrawHitDiagnostics/shdiag" for fn in fns],filter_name=["time","edep","plane","panel","straw","runid"]):
         batch = batch[batch.edep > args.ecut]
-        aa.append(ak.copy(batch))
-    aa = ak.concatenate(aa)
-    sids = aa.plane*96*6 + aa.panel*96 + aa.straw
-    order = ak.argsort(sids)
-    aa = aa[order]
-    sids = sids[order]
-    runs = ak.run_lengths(sids)
-    aa = ak.unflatten(aa,runs)
+        a["tcal"].append(np.copy(batch.time.tcal.to_numpy()))
+        a["thv"].append(np.copy(batch.time.thv.to_numpy()))
+        a["sid"].append(np.copy((batch.plane*96*6+batch.panel*96+batch.straw).to_numpy()))
+        runid = batch.runid[0]
+        counts += len(batch.edep)
+        print(counts)
 
+    for field in a:
+        a[field] = np.concatenate(a[field])
+    order = ak.argsort(a["sid"])
+    for field in a:
+        a[field] = a[field][order]
+    run_lengths = ak.run_lengths(a["sid"])
+    dts = ak.unflatten(a["tcal"]-a["thv"],run_lengths)
+    sids = ak.unflatten(a["sid"],run_lengths)
+    
     print("Read data")
     
-    c = dbUtility.getCalibrations(int(aa[0].runid[0]),["TrkPreampStraw"],args.dbpurpose,args.dbversion,args.dbtext)
+    c = dbUtility.getCalibrations(int(runid),["TrkPreampStraw"],args.dbpurpose,args.dbversion,args.dbtext)
     print("Read calibrations")
 
-    dts = aa.time.tcal-aa.time.thv
     dts = dts[np.abs(dts) < args.dtcut]
     counts = ak.count(dts,axis=1)
     means0 = np.mean(dts,axis=1)
@@ -60,7 +68,6 @@ if __name__ == "__main__":
 
     expected_counts = np.median(counts[counts != 0])
     goodstraw = (counts > expected_counts/5) & (counts < expected_counts*3)
-    sids = aa.plane*96*6 + aa.panel*96 + aa.straw
 
     offsets = np.zeros(36*6*96)
     for i in range(len(goodstraw)):
@@ -74,16 +81,15 @@ if __name__ == "__main__":
     print('Wrote %d calibrations, avg mag = %f' % (np.sum(goodstraw),np.mean(np.abs(offsets[offsets != 0]))))
 
     if args.plot:
-        full_sids = ak.flatten(aa.plane*96*6 + aa.panel*96 + aa.straw)
-        full_dts = ak.flatten(aa.time.tcal-aa.time.thv)
-        full_offsets = offsets[full_sids]
+        full_offsets = offsets[a["sid"]]
+        full_dts = a["tcal"]-a["thv"]
         corrected_dts = full_dts - full_offsets
     
         import ROOT
         h0 = ROOT.TH1F("h0","h0",300,-30,30)
         h1 = ROOT.TH1F("h1","h1",300,-30,30)
-        h0.FillN(len(full_dts),full_dts.to_numpy().astype(np.double),np.ones(len(full_dts),dtype=np.double))
-        h1.FillN(len(full_dts),corrected_dts.to_numpy().astype(np.double),np.ones(len(full_dts),dtype=np.double))
+        h0.FillN(len(full_dts),full_dts.astype(np.double),np.ones(len(full_dts),dtype=np.double))
+        h1.FillN(len(corrected_dts),corrected_dts.astype(np.double),np.ones(len(corrected_dts),dtype=np.double))
 
         h0.GetXaxis().SetTitle("Delta t (ns)")
         h1.SetLineColor(ROOT.kRed)
