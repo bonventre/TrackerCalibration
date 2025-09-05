@@ -4,6 +4,7 @@ import csv
 import DbService
 import DbTables
 
+# FIXME use query info
 field_names = {"TrkPreampStraw": "index,delay_hv,delay_cal,threshold_hv,threshold_cal,gain".split(","),
             "TrkDelayPanel": "index,delay".split(","),
             "TrkAlignPanel": "index,strawid,dx,dy,dz,rx,ry,rz".split(",")}
